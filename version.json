@@ -1,0 +1,11 @@
+{
+  "version": "3.6.0-ULTIMUM",
+  "bin": "https://raw.githubusercontent.com/spnk89z/Temprature_Sensor/main/firmware_3.6.0-ULTIMUM.bin",
+  "filename": "firmware_3.6.0-ULTIMUM.bin",
+  "sha256": "c019249d241b93673944e27f2a5ae5406f9545b67c0db1756d715ee04f5f3ca5",
+  "size": 65595,
+  "build_date": "2025-11-26T00:11:00Z",
+  "notes": "Firmware update for v3.6.0-ULTIMUM (AUTO OTA enabled)",
+  "sig": "",
+  "sig_algo": ""
+}

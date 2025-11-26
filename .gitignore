@@ -1,0 +1,15 @@
+/.pio
+/.vscode
+.vscode/
+build/
+*.bin
+private.pem
+*.pem
+*.der
+.pioenvs
+/.cache
+/.env
+.env*
+/.DS_Store
+__pycache__/
+/.pytest_cache/

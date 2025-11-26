@@ -1,0 +1,124 @@
+name: OTA Release Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_version:
+        description: 'Version to publish (e.g. 3.6.0-ULTIMUM)'
+        required: true
+        default: '3.6.0-ULTIMUM'
+      builder:
+        description: 'Builder to use: platformio or arduino'
+        required: true
+        default: 'platformio'
+      with_mbedtls:
+        description: 'Enable MBEDTLS on the build so the firmware can verify signatures' 
+        required: false
+        default: 'true'
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Set up PlatformIO
+        if: ${{ github.event.inputs.builder == 'platformio' }}
+        uses: platformio/setup-platformio@v2
+
+      - name: Build firmware using PlatformIO
+        if: ${{ github.event.inputs.builder == 'platformio' }}
+        run: |
+          echo "Building firmware for ${{ github.event.inputs.new_version }}"
+          PIO_FLAGS="-D FW_VERSION=\"${{ github.event.inputs.new_version }}\""
+          if [ "${{ github.event.inputs.with_mbedtls }}" = "true" ]; then
+            PIO_FLAGS="$PIO_FLAGS -D MBEDTLS"
+          fi
+          pio run -e nodemcuv2 $PIO_FLAGS
+          mkdir -p build
+          cp .pio/build/nodemcuv2/firmware.bin firmware_${{ github.event.inputs.new_version }}.bin
+
+      - name: Set up Arduino CLI
+        if: ${{ github.event.inputs.builder == 'arduino' }}
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Install Arduino core (esp8266)
+        if: ${{ github.event.inputs.builder == 'arduino' }}
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp8266:esp8266
+
+      - name: Build firmware using Arduino CLI
+        if: ${{ github.event.inputs.builder == 'arduino' }}
+        run: |
+          echo "Building firmware with Arduino CLI for ${{ github.event.inputs.new_version }}"
+          # create build dir
+          rm -rf build && mkdir build
+          ARDUINO_FLAGS="--build-property build.extra_flags=-DFW_VERSION=\"${{ github.event.inputs.new_version }}\""
+          if [ "${{ github.event.inputs.with_mbedtls }}" = "true" ]; then
+            ARDUINO_FLAGS="$ARDUINO_FLAGS --build-property build.extra_flags=-DMBEDTLS"
+          fi
+          arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 --output-dir build $ARDUINO_FLAGS ./arduino
+          # find the generated .bin (arduino-cli places it in build/<fqbn>/)
+          BINPATH=$(find build -name "*.bin" | head -n 1)
+          cp "$BINPATH" firmware_${{ github.event.inputs.new_version }}.bin
+
+      - name: Compute SHA and size
+        id: compute
+        run: |
+          sha=$(sha256sum "firmware_${{ github.event.inputs.new_version }}.bin" | awk '{print $1}')
+          size=$(wc -c < "firmware_${{ github.event.inputs.new_version }}.bin")
+          echo "sha=$sha" >> $GITHUB_OUTPUT
+          echo "size=$size" >> $GITHUB_OUTPUT
+
+      - name: Sign and Update version.json
+        run: |
+          # If you have a private key to sign with, save it as a repo secret (e.g. SIGNING_KEY)
+          if [[ -n "${{ secrets.SIGNING_KEY }}" ]]; then
+            echo "Writing private key (from secret) to private.pem"
+            echo "${{ secrets.SIGNING_KEY }}" > private.pem
+            chmod 600 private.pem
+            python3 scripts/sign_and_update_version.py --bin firmware_${{ github.event.inputs.new_version }}.bin --version ${{ github.event.inputs.new_version }} --key private.pem --json version.json --raw-base-url "https://raw.githubusercontent.com/${{ github.repository }}/main"
+          else
+            cat > version.json <<EOF
+            {
+              "version": "${{ github.event.inputs.new_version }}",
+              "bin": "https://raw.githubusercontent.com/${{ github.repository }}/main/firmware_${{ github.event.inputs.new_version }}.bin",
+              "filename": "firmware_${{ github.event.inputs.new_version }}.bin",
+              "sha256": "${{ steps.compute.outputs.sha }}",
+              "size": ${{ steps.compute.outputs.size }},
+              "build_date": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+              "notes": "Automated build from GitHub Action"
+            }
+            EOF
+          fi
+
+      - name: Commit and push version.json + firmware
+        run: |
+          git add version.json firmware_${{ github.event.inputs.new_version }}.bin
+          git commit -m "ci: add firmware ${{ github.event.inputs.new_version }} and update version.json" || echo "no changes to commit"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: (Optional) Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.event.inputs.new_version }}
+          name: "Release ${{ github.event.inputs.new_version }}"
+          files: "firmware_${{ github.event.inputs.new_version }}.bin"
+          body: |
+            Firmware built from GitHub Actions for ${{ github.event.inputs.new_version }}
+
+      - name: Upload to Actions artifacts (for later download)
+        uses: actions/upload-artifact@v4
+        with:
+          name: "firmware-${{ github.event.inputs.new_version }}"
+          path: "firmware_${{ github.event.inputs.new_version }}.bin"
